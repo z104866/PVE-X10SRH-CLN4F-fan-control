@@ -1,0 +1,4 @@
+pyaml-env
+python-ipmi
+diskinfo
+psutil

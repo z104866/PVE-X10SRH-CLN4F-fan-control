@@ -1,0 +1,66 @@
+general:
+    motherboard: "X10SRH-CLN4F"
+    update_interval: 30
+    environment:
+        LC_TIME: "en_DK.UTF-8"
+        LC_ALL: "en_DK.UTF-8"
+    debug: False
+
+beep:
+    frequency: 2500
+    duration: 1250
+    delay: 1250
+    repetitions: 5 
+
+# X10SRH-CLN4F CPU
+cpu:
+    driver: ipmitool
+    max_temp: 60
+    min_temp: 50
+    warning_temp: 80
+    shutdown_temp: 95
+
+# X10SRH-CLN4F Drive
+# (!! will override more loose Requirements from hdd/sdd/nvme !!)
+drive:
+    max_temp: 60
+    min_temp: 40
+    warning_temp: 70
+    shutdown_temp: 80
+
+# HDD Drive
+hdd:
+    max_temp: 37
+    min_temp: 32
+    warning_temp: 50
+    shutdown_temp: 55
+
+# SSD Drive
+ssd:
+    max_temp: 60
+    min_temp: 50
+    warning_temp: 65
+    shutdown_temp: 75
+
+# NVME Drive
+nvme:
+    max_temp: 60
+    min_temp: 50
+    warning_temp: 65
+    shutdown_temp: 75
+
+# X10SRH-CLN4F Fan - 根据测试结果优化
+fan:
+    initial_speed: 30  # 降低初始速度
+    max_speed: 80      # 限制最大速度
+    min_speed: 20      # 提高最小速度，避免低转速问题
+    inc_speed_step: 5
+    dec_speed_step: 2
+
+# 其他组件温度配置（内存、PCH、VRM 等）
+other_components:
+    driver: ipmitool
+    max_temp: 70      # 其他组件温度达到 70°C 开始升速
+    min_temp: 40      # 其他组件温度低于 40°C 开始降速
+    warning_temp: 80  # 80°C 发出警告
+    shutdown_temp: 90 # 90°C 自动关机 
