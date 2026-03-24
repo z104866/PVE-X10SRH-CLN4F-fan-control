@@ -1,177 +1,253 @@
-# supermicro-fan-control
-Supermicro Fan Control
+# PVE-X10SRH-CLN4F-fan-control
 
-# Introduction
-This Project features two separate Components:
-- Fan Speed Control (AKA "Variable Fan Speed")
-- Device Overtemperature Protection (in case Cooling failed or airflow/static Pressure is not Sufficient to properly cool down Components)
+Supermicro X10SRH-CLN4F 主板专用 IPMI 风扇控制程序
 
-For a Protection-Only (Overtemperature Protection) see my Separate [Cooling Failure Protection](https://github.com/luckylinux/cooling-failure-protection) Project.
+---
 
-**IMPORTANT**: it is **HIGHLY RECCOMENDED** to setup the Separate [Cooling Failure Protection](https://github.com/luckylinux/cooling-failure-protection) Service as well, in order to ensure some Level of Redundancy !!!
+## 主板信息
 
-# Features
-- Temperature Controller for Supermicro IPMI Devices ("Variable Fan Speed")
-- Temperature Warning (BEEP) when System Cooling cannot keep up with Devices Temperatures
-- Temperature Protection (SHUTDOWN) when System Cooling cannot keep up with Devices Temperatures
+| 项目 | 详情 |
+|------|------|
+| 主板型号 | Supermicro X10SRH-CLN4F |
+| CPU | Intel Xeon E5-2667 v3 @ 3.20GHz |
+| 内存 | 128 GB |
+| 风扇接口 | FAN1-FAN6 |
+| IPMI BMC | 板载 |
 
-# Requirements
-At the moment this was developed for use with GNU/Linux.
+---
 
-Nevertheless, since the Packages are very similar for both GNU/Linux and other UNIX-Like OS (TrueNAS, FreeBSD, etc), there shouldn't be a huge effort required in order to make the Tool Multi-Platform.
+## 风扇接口说明
 
-Feel free to Describe the required Changes in an Issue and/or submit a PR :+1:.
+| 接口 | 用途 | 类型 | 控制方式 |
+|------|------|------|----------|
+| FAN3 | CPU 风扇 | 4pin PWM | 线性调节 ✅ |
+| FAN4 | 周边风扇 | 3pin | 固定档位 ❌ |
+| FAN5 | 周边风扇 | 3pin | 固定档位 ❌ |
 
-In order to run a (mostly) Automated Setup (using `setup.sh`) the Following is Required:
-- `bash`
+---
 
-In order to be able to Run Correctly, the Tool needs the following Components/Systems:
-- `python` Version 3 (Tested with `python` Version 3.11 and 3.12)
-- `systemd` (in the future other Init Systems might be supported)
-- `ipmitool` (to be able to change Fan Speed)
-- `smartctl` (to read Disks Temperatures)
-- `beep` (for generating an Audible WARNING generation in case Temperature is getting dangerously High)
+## 风扇转速曲线（实测数据）
 
-# Installation
+### FAN3（CPU风扇）- 线性可调
 
-Clone the Repository:
-```shell
-git clone https://github.com/luckylinux/supermicro-fan-control.git
+| 百分比 | 十六进制 | 转速 RPM | 说明 |
+|--------|----------|----------|------|
+| 10% | 0x0A | 2400 | 静音模式 |
+| 15% | 0x0F | 2400 | |
+| 20% | 0x14 | 2500-2600 | |
+| 25% | 0x19 | 2900 | |
+| 30% | 0x1E | 3100-3400 | |
+| 35% | 0x23 | 3800 | |
+| 40% | 0x28 | 4100 | |
+| 45% | 0x2D | 4500 | |
+| 50% | 0x32 | 4800-4900 | |
+| 55% | 0x37 | 5200 | |
+| 60% | 0x3C | 5500-5600 | |
+| 65% | 0x41 | 5800-5900 | |
+| 70% | 0x46 | 6100-6200 | |
+| 75% | 0x4B | 6400 | |
+| 80% | 0x50 | 6700 | |
+| 85% | 0x55 | 6900 | |
+| 90% | 0x5A | 7200 | |
+| 95% | 0x5F | 7400 | |
+| 100% | 0x64 | 7600-7700 | 最大转速 |
+
+**特点**：FAN3 可以线性调节，最小 2400 RPM，最大 7700 RPM
+
+---
+
+### FAN4（周边风扇）- 固定档位
+
+| 百分比 | 十六进制 | 转速 RPM | 说明 |
+|--------|----------|----------|------|
+| 0-10% | 0x00-0x0A | **1400** | 推荐使用 |
+| 11% | 0x0B | 800 | 过渡档位 |
+| 12-48% | 0x0C-0x30 | 700 | |
+| 49-53% | 0x31-0x35 | 1400 | 异常区间 |
+| 54-100% | 0x36-0x64 | 700 | |
+
+**注意**：FAN4 只有 5 个有效档位，不是线性调节
+
+---
+
+### FAN5（周边风扇）- 固定档位
+
+| 百分比 | 十六进制 | 转速 RPM | 说明 |
+|--------|----------|----------|------|
+| 0-35% | 0x00-0x23 | **1400** | 推荐使用 |
+| 40-100% | 0x28-0x64 | 600 | 可选更低转速 |
+
+**注意**：FAN5 只有 2 个档位
+
+---
+
+## 控制策略
+
+### 风扇控制逻辑
+
+| 风扇 | 控制方式 | 说明 |
+|------|----------|------|
+| **FAN3** | 自动调节 | 根据 CPU 温度线性调节 10-100% |
+| **FAN4** | 联动控制 | CPU < 60°C → 0x64 (700 RPM)<br>CPU ≥ 60°C → 0x00 (1400 RPM) |
+| **FAN5** | 联动控制 | CPU < 60°C → 0x64 (600 RPM)<br>CPU ≥ 60°C → 0x00 (1400 RPM) |
+
+---
+
+### 温度阈值设置
+
+| 组件 | 升速阈值 | 降速阈值 | 警告温度 |
+|------|----------|----------|----------|
+| CPU | 60°C | 50°C | 80°C |
+| 内存/其他 | 80°C | 45°C | 85°C |
+| 磁盘 | 70°C | 55°C | 75°C |
+
+---
+
+### FAN3 温度-转速对照表
+
+| CPU 温度 | FAN3 百分比 | FAN3 转速 |
+|----------|-------------|----------|
+| < 40°C | 10% | 2400 RPM |
+| 40-50°C | 15-20% | 2400-2600 RPM |
+| 50-60°C | 25-30% | 2900-3400 RPM |
+| 60-70°C | 40-55% | 4100-5200 RPM |
+| 70-80°C | 60-75% | 5500-6400 RPM |
+| > 80°C | 80-100% | 6700-7700 RPM |
+
+---
+
+## IPMI 命令说明
+
+### Zone 0（FAN3）
+
+```bash
+# 切换到手动模式
+ipmitool raw 0x30 0x45 0x01 0x01
+
+# 设置转速（低字节）
+ipmitool raw 0x30 0x70 0x66 0x01 0x00 <值>
 ```
 
-Change Folder to the Project that was just cloned:
-```shell
-cd supermicro-fan-control
+### Zone 1（FAN4/FAN5）
+
+```bash
+# 设置 FAN4 转速
+ipmitool raw 0x30 0x70 0x66 0x01 0x01 <值>
+
+# FAN5 和 FAN4 共用同一个控制寄存器
 ```
 
-## Preferred (use Python in venv)
-Run the Setup:
-```shell
+---
+
+## 安装说明
+
+### 前提条件
+
+```bash
+# 安装依赖
+apt update && apt install -y python3 ipmitool smartmontools beep
+```
+
+### 克隆仓库
+
+```bash
+git clone https://github.com/z104866/PVE-X10SRH-CLN4F-fan-control.git
+cd PVE-X10SRH-CLN4F-fan-control
+```
+
+### 运行安装脚本
+
+```bash
 ./setup.sh
 ```
 
-After that, check the logs:
-```shell
-journalctl -f -xeu supermicro-fan-control
+### 启动服务
+
+```bash
+systemctl enable --now supermicro-fan-control
 ```
 
-## Manual (use Binary Packages)
-You can grab a `onefile` Package built using `nuitka` from the Releases Section.
+### 查看日志
 
-You however need to Manually setup everything else, including:
-- `systemd` Service
-- Configuration Files in `/etc/supermicro-fan-control`
-
-# Build
-## Build a Binary Package
-From inside the checked out Repository Folder:
-```shell
-cd supermicro-fan-controller
+```bash
+journalctl -f -u supermicro-fan-control
 ```
 
-Run:
-```shell
-./build.sh
+---
+
+## 配置文件
+
+配置文件位置：`/etc/supermicro-fan-control/settings.yml`
+
+### 关键配置项
+
+```yaml
+fan:
+  initial_speed: 16      # 初始转速 16%
+  max_speed: 50          # 最大转速 50%
+  min_speed: 10          # 最小转速 10%
+  inc_speed_step: 5      # 增速步进 5%
+  dec_speed_step: 2      # 降速步进 2%
+  update_interval: 120   # 更新间隔 120秒
+
+cpu:
+  max_temp: 80           # CPU 最高温度阈值
+  min_temp: 40          # CPU 最低温度阈值
 ```
 
-# Environment Configuration Variables
-The following Environment Configuration Variables can be set:
-- `SUPERMICRO_FAN_CONTROL_CONFIG_PATH`: where all the YML Configuration Files are located (defaults to `/etc/supermicro-fan-control`)
+---
 
-# Enable the Beep Module for early Warnings
-UPDATE: this is now performed automatically by `setup.sh`.
+## 测试记录
 
-Load the Kernel Module:
-```shell
-sudo modprobe pcspkr
-```
+### 测试日期
+2026-03-23 至 2026-03-24
 
-Then perform a Test with:
-```shell
-beep -f 2500 -l 2000 -r 5 -D 1000
-```
+### 测试方法
+1. 切换到 Full 模式
+2. 从 0% 到 100%，每次增加 2-5%
+3. 等待风扇稳定后记录转速
+4. 每个测试重复 3 次取一致结果
 
-Set the Kernel Module to be automatically loaded at Startup:
-```shell
-echo "pcspkr" > /etc/modules-load.d/beep.conf
-```
+### 测试环境
+- 系统：Proxmox VE (PVE)
+- 内核：Linux 6.17.4-2-pve
+- 室温：约 25°C
+- 负载：空载至满载
 
-For Ubuntu at least. you also need to REMOVE the blacklisting in `/etc/modprobe.d/blacklist.conf`:
-```shell
-# ugly and loud noise, getting on everyone's nerves; this should be done by a
-# nice pulseaudio bing (Ubuntu: #77010)
-#blacklist pcspkr
-```
+---
 
+## 已知问题
 
+1. **FAN4/FAN5 无法线性调节**
+   - 原因：主板 BMC 固件限制
+   - 解决：使用固定档位控制
 
-# Update initramfs / initrd.
-UPDATE: this is currently performed automatically if `update-initramfs` or `dracut` are Detected.
+2. **FAN4 在 49-53% 区间行为异常**
+   - 该区间会切换到 1400 RPM
+   - 建议避免使用该区间
 
-Debian/Ubuntu uses `update-initramfs`, while Fedora/RHEL/Archlinux use `dracut`.
+3. **低百分比值可能不稳定**
+   - FAN3 在 5% 时可能出现不稳定
+   - 建议最低使用 10%
 
-You can also do it manually.
+---
 
-For example on Debian/Ubuntu:
-```shell
-update-initramfs -k all -u ; update-grub
-```
+## 参考资料
 
-# Test that is works Correctly
-Currently, the `default` Profile has been Tested on Supermicro X10SLM-F/X10SLL-F Motherboards.
+- [Supermicro Fan Speed Control 原始项目](https://b3n.org/supermicro-fan-speed-script/)
+- [Supermicro X9/X10/X11 Fan Speed Control](https://forums.servethehome.com/index.php?threads/supermicro-x9-x10-x11-fan-speed-control.10059/)
+- [IPMI Fan Control Registers](https://forums.servethehome.com/index.php?resources/supermicro-x9-x10-x11-fan-speed-control.20/)
 
-You **ABSOLUTELY NEED** to check that the Registers are set correctly for **your** Motherboard.
+---
 
-Take a Look at the References Section for some Examples of different Registers Values (RAW Values to be used with `ipmitool`).
+## License
 
-After you found what works for you, please submit a PR with your Particular Motherboard Profile.
+AGPL-3.0
 
-This will be included in `etc/supermicro-fan-control/ipmi.d/<motherboard>.yml`.
+---
 
-# ToDo
-No Timeline is currently defined.
+## 作者
 
-## Get Current Fan Speed
-IMPLEMENTED in commit 4b9f3c39250d2bc7d39f1af5a22c4336e4f87530.
+基于 [Benjamin Bryan](https://b3n.org) 的原始代码改编
 
-```shell
-ipmitool -c sensor | grep -Ei "^FAN|^MB-FAN|^BPN-FAN"
-```
-
-## Implement Support for Other Systems
-Use `echo` to directly Control PWM Fans on non-IPMI System.
-
-Target is at the Moment an ASUS x570 AMD Ryzen System.
-
-Notes: https://bbs.archlinux.org/viewtopic.php?id=225349
-
-## Docker Image
-In theory, it should be possible to run this as a Docker Container.
-
-This will however require ROOT Privileges or Setuid Bit set and/or `CAP_SYS_RAWIO`, since smartctl requires those.
-
-## Notifications
-In the Future better Notifications than just a `beep` might be supported.
-
-The current Plan would be to leverage the existing Frameworks/Bridges, including:
-- `mailrise` (`smtp` -> `apprise`), requires an MTA to be Configured on the System running this Tool (e.g.`postfix`)
-- [Notifiers Providers](https://notifiers.readthedocs.io/en/latest/providers/index.html)
-
-# Credits
-Project based on the work of [Benjamin Bryan](https://b3n.org).
-
-See his Blog Post for the [Original Code](https://b3n.org/supermicro-fan-speed-script/).
-
-# References
-Initial Code:
-- https://b3n.org/supermicro-fan-speed-script/
-
-Register Settings and Explanation:
-- https://forums.servethehome.com/index.php?threads/supermicro-x9-x10-x11-fan-speed-control.10059/page-10
-- https://forums.servethehome.com/index.php?resources/supermicro-x9-x10-x11-fan-speed-control.20/
-- https://serverfault.com/questions/662526/fan-speeds-on-supermicro-system-via-ipmi
-
-Other:
-- https://unix.stackexchange.com/questions/65595/how-to-know-if-a-disk-is-an-ssd-or-an-hdd
-- https://unix.stackexchange.com/questions/387855/make-lsblk-list-devices-by-id
-
+针对 Supermicro X10SRH-CLN4F 主板优化
